@@ -1,5 +1,3 @@
-# เขียน .gitignore (ทับ/สร้างใหม่)
-@"
 bin/
 obj/
 **/bin/
@@ -7,9 +5,3 @@ obj/
 **/publish/
 .vs/
 .vscode/
-"@ | Set-Content -Encoding ascii .gitignore
-
-# เลิก track ทุกไฟล์ แล้ว add ใหม่ตาม .gitignore (วิธีที่ชัวร์สุด)
-git rm -r --cached .
-git add .
-git commit -m "chore: ignore build outputs (bin/ obj/ publish/)"
