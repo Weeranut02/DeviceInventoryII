@@ -1,0 +1,601 @@
+dotnet new console -n DeviceInventory
+cd DeviceInventory
+
+# ต้องเป็น Windows TFM เพื่อใช้ WMI
+# เปิดไฟล์ DeviceInventory.csproj แล้วแทนที่ด้วยเนื้อหาด้านล่าง
+
+dotnet add package System.Management
+dotnet add package MySql.Data
+
+
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="8.0.0" />
+    <PackageReference Include="MySql.Data" Version="9.1.0" />
+  </ItemGroup>
+</Project>
+
+
+
+-- Database & user (ตัวอย่าง)
+CREATE DATABASE IF NOT EXISTS assetdb
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_0900_ai_ci;
+
+CREATE USER IF NOT EXISTS 'assetuser'@'%' IDENTIFIED BY 'assetpass';
+GRANT ALL PRIVILEGES ON assetdb.* TO 'assetuser'@'%';
+FLUSH PRIVILEGES;
+
+USE assetdb;
+
+-- ตารางหลัก: เครื่อง
+CREATE TABLE IF NOT EXISTS machines (
+  id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+  machine_name  VARCHAR(255) NOT NULL,
+  user_name     VARCHAR(255),
+  manufacturer  VARCHAR(255),
+  model         VARCHAR(255),
+  bios_serial   VARCHAR(120),
+  os_caption    VARCHAR(255),
+  os_version    VARCHAR(64),
+  os_arch       VARCHAR(32),
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_bios_serial (bios_serial),
+  UNIQUE KEY uk_machine_name (machine_name)
+) ENGINE=InnoDB;
+
+-- จอภาพ
+CREATE TABLE IF NOT EXISTS monitors (
+  id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+  machine_id   BIGINT NOT NULL,
+  manufacturer VARCHAR(255),
+  model        VARCHAR(255),
+  serial       VARCHAR(255),
+  FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE,
+  INDEX ix_mon_machine (machine_id)
+) ENGINE=InnoDB;
+
+-- ปริ้นเตอร์
+CREATE TABLE IF NOT EXISTS printers (
+  id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+  machine_id   BIGINT NOT NULL,
+  name         VARCHAR(255),
+  driver_name  VARCHAR(255),
+  port_name    VARCHAR(255),
+  is_network   TINYINT(1),
+  is_default   TINYINT(1),
+  is_shared    TINYINT(1),
+  manufacturer VARCHAR(255),
+  FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE,
+  INDEX ix_prn_machine (machine_id)
+) ENGINE=InnoDB;
+
+-- สแกนเนอร์ (Imaging device)
+CREATE TABLE IF NOT EXISTS scanners (
+  id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+  machine_id     BIGINT NOT NULL,
+  name           VARCHAR(255),
+  manufacturer   VARCHAR(255),
+  model          VARCHAR(255),
+  pnp_device_id  VARCHAR(500),
+  FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE,
+  INDEX ix_sc_machine (machine_id)
+) ENGINE=InnoDB;
+
+-- เครื่องอ่านบัตร (Smart Card Reader)
+CREATE TABLE IF NOT EXISTS card_readers (
+  id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+  machine_id     BIGINT NOT NULL,
+  name           VARCHAR(255),
+  manufacturer   VARCHAR(255),
+  model          VARCHAR(255),
+  pnp_device_id  VARCHAR(500),
+  FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE,
+  INDEX ix_cr_machine (machine_id)
+) ENGINE=InnoDB;
+
+
+
+using System.Collections.Generic;
+
+public class MachineRecord
+{
+    public string MachineName { get; set; } = "";
+    public string? UserName { get; set; }
+    public string? Manufacturer { get; set; }
+    public string? Model { get; set; }
+    public string? BiosSerial { get; set; }
+    public string? OsCaption { get; set; }
+    public string? OsVersion { get; set; }
+    public string? OsArch { get; set; }
+}
+
+public class MonitorRecord
+{
+    public string? Manufacturer { get; set; }
+    public string? Model { get; set; }
+    public string? Serial { get; set; }
+}
+
+public class PrinterRecord
+{
+    public string? Name { get; set; }
+    public string? DriverName { get; set; }
+    public string? PortName { get; set; }
+    public bool? IsNetwork { get; set; }
+    public bool? IsDefault { get; set; }
+    public bool? IsShared { get; set; }
+    public string? Manufacturer { get; set; }
+}
+
+public class ScannerRecord
+{
+    public string? Name { get; set; }
+    public string? Manufacturer { get; set; }
+    public string? Model { get; set; }
+    public string? PnpDeviceId { get; set; }
+}
+
+public class CardReaderRecord
+{
+    public string? Name { get; set; }
+    public string? Manufacturer { get; set; }
+    public string? Model { get; set; }
+    public string? PnpDeviceId { get; set; }
+}
+
+public class MachineSnapshot
+{
+    public MachineRecord Machine { get; set; } = new();
+    public List<MonitorRecord> Monitors { get; set; } = new();
+    public List<PrinterRecord> Printers { get; set; } = new();
+    public List<ScannerRecord> Scanners { get; set; } = new();
+    public List<CardReaderRecord> CardReaders { get; set; } = new();
+}
+
+using System;
+using System.Linq;
+using System.Management;  // WMI
+using System.Text;
+
+public static class Collector
+{
+    public static MachineSnapshot CollectAll()
+    {
+        var snap = new MachineSnapshot();
+        snap.Machine = CollectMachine();
+        snap.Monitors = CollectMonitors();
+        snap.Printers = CollectPrinters();
+        snap.Scanners = CollectScanners();
+        snap.CardReaders = CollectCardReaders();
+        return snap;
+    }
+
+    // ---------- 1) Machine / OS / BIOS ----------
+    private static MachineRecord CollectMachine()
+    {
+        var rec = new MachineRecord
+        {
+            MachineName = Environment.MachineName,
+            UserName = Environment.UserName
+        };
+
+        // Manufacturer/Model
+        using (var s = new ManagementObjectSearcher("SELECT Manufacturer, Model FROM Win32_ComputerSystem"))
+        foreach (ManagementObject mo in s.Get())
+        {
+            rec.Manufacturer = mo["Manufacturer"]?.ToString()?.Trim();
+            rec.Model = mo["Model"]?.ToString()?.Trim();
+            break;
+        }
+
+        // BIOS Serial
+        using (var s = new ManagementObjectSearcher("SELECT SerialNumber FROM Win32_BIOS"))
+        foreach (ManagementObject mo in s.Get())
+        {
+            rec.BiosSerial = mo["SerialNumber"]?.ToString()?.Trim();
+            break;
+        }
+
+        // OS
+        using (var s = new ManagementObjectSearcher("SELECT Caption, Version, OSArchitecture FROM Win32_OperatingSystem"))
+        foreach (ManagementObject mo in s.Get())
+        {
+            rec.OsCaption = mo["Caption"]?.ToString()?.Trim();
+            rec.OsVersion = mo["Version"]?.ToString()?.Trim();
+            rec.OsArch    = mo["OSArchitecture"]?.ToString()?.Trim(); // ex: "64-bit"
+            break;
+        }
+
+        return rec;
+    }
+
+    // ---------- 2) Monitors (WmiMonitorID in root\wmi) ----------
+    private static System.Collections.Generic.List<MonitorRecord> CollectMonitors()
+    {
+        var list = new System.Collections.Generic.List<MonitorRecord>();
+        try
+        {
+            var scope = new ManagementScope(@"\\.\root\wmi");
+            scope.Connect();
+            using var s = new ManagementObjectSearcher(scope,
+                new ObjectQuery("SELECT * FROM WmiMonitorID WHERE Active = True"));
+            foreach (ManagementObject mo in s.Get())
+            {
+                string? mfg = TryDecodeUShortArray(mo["ManufacturerName"]);
+                string? model = TryDecodeUShortArray(mo["UserFriendlyName"]);
+                string? serial = TryDecodeUShortArray(mo["SerialNumberID"]);
+                list.Add(new MonitorRecord { Manufacturer = mfg, Model = model, Serial = serial });
+            }
+        }
+        catch { /* บางเครื่องอาจปิด WMI นี้ไว้ */ }
+        return list;
+    }
+
+    private static string? TryDecodeUShortArray(object? value)
+    {
+        try
+        {
+            if (value is ushort[] arr)
+            {
+                var chars = arr.TakeWhile(u => u != 0).Select(u => (char)u).ToArray();
+                return new string(chars).Trim();
+            }
+        } catch {}
+        return null;
+    }
+
+    // ---------- 3) Printers ----------
+    private static System.Collections.Generic.List<PrinterRecord> CollectPrinters()
+    {
+        var list = new System.Collections.Generic.List<PrinterRecord>();
+        try
+        {
+            using var s = new ManagementObjectSearcher(
+                "SELECT Name, DriverName, PortName, Network, Default, Shared FROM Win32_Printer");
+            foreach (ManagementObject mo in s.Get())
+            {
+                var name = mo["Name"]?.ToString();
+                var driver = mo["DriverName"]?.ToString();
+                var port = mo["PortName"]?.ToString();
+                bool? network = mo["Network"] as bool?;
+                bool? isDefault = mo["Default"] as bool?;
+                bool? shared = mo["Shared"] as bool?;
+
+                // Manufacturer บางครั้งอยู่ใน DriverName (เช่น "HP Universal Printing ...")
+                string? mfg = GuessVendorFromText(driver ?? name);
+
+                list.Add(new PrinterRecord {
+                    Name = name,
+                    DriverName = driver,
+                    PortName = port,
+                    IsNetwork = network,
+                    IsDefault = isDefault,
+                    IsShared = shared,
+                    Manufacturer = mfg
+                });
+            }
+        }
+        catch {}
+        return list;
+    }
+
+    private static string? GuessVendorFromText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var t = text.ToLowerInvariant();
+        string[] vendors = { "hp", "canon", "epson", "brother", "ricoh", "lexmark", "samsung", "kyocera", "xerox" };
+        foreach (var v in vendors)
+            if (t.Contains(v)) return v.ToUpperInvariant();
+        return null;
+    }
+
+    // ---------- 4) Scanners (Imaging devices via PnP) ----------
+    private static System.Collections.Generic.List<ScannerRecord> CollectScanners()
+    {
+        var list = new System.Collections.Generic.List<ScannerRecord>();
+        try
+        {
+            // PNPClass 'Imaging' หรือ GUID ของ Imaging devices
+            using var s = new ManagementObjectSearcher(
+                "SELECT Name, Manufacturer, PNPDeviceID FROM Win32_PnPEntity " +
+                "WHERE PNPClass='Imaging' OR PNPClass='Image' " +
+                "   OR ClassGuid='{6bdd1fc6-810f-11d0-bec7-08002be2092f}'");
+            foreach (ManagementObject mo in s.Get())
+            {
+                var name = mo["Name"]?.ToString();
+                var mfg  = mo["Manufacturer"]?.ToString();
+                var pnp  = mo["PNPDeviceID"]?.ToString();
+
+                // เดา Model จาก Name (เพราะหลายครั้ง WMI ไม่มี property 'Model')
+                var model = ExtractModelFromName(name);
+
+                list.Add(new ScannerRecord {
+                    Name = name, Manufacturer = mfg, Model = model, PnpDeviceId = pnp
+                });
+            }
+        }
+        catch {}
+        return list;
+    }
+
+    // ---------- 5) Smart Card Readers ----------
+    private static System.Collections.Generic.List<CardReaderRecord> CollectCardReaders()
+    {
+        var list = new System.Collections.Generic.List<CardReaderRecord>();
+        try
+        {
+            using var s = new ManagementObjectSearcher(
+                "SELECT Name, Manufacturer, PNPDeviceID FROM Win32_PnPEntity " +
+                "WHERE PNPClass='SmartCardReader' " +
+                "   OR ClassGuid='{50dd5230-ba8a-11d1-bf5d-0000f805f530}'");
+            foreach (ManagementObject mo in s.Get())
+            {
+                var name = mo["Name"]?.ToString();
+                var mfg  = mo["Manufacturer"]?.ToString();
+                var pnp  = mo["PNPDeviceID"]?.ToString();
+                var model = ExtractModelFromName(name);
+
+                list.Add(new CardReaderRecord {
+                    Name = name, Manufacturer = mfg, Model = model, PnpDeviceId = pnp
+                });
+            }
+        }
+        catch {}
+        return list;
+    }
+
+    private static string? ExtractModelFromName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        // ดึงคำที่ดูเหมือน 'รุ่น' แบบง่าย ๆ: ตัดวงเล็บ/Driver suffix ออก
+        var cleaned = name.Replace("WIA", "", StringComparison.OrdinalIgnoreCase)
+                          .Replace("USB", "", StringComparison.OrdinalIgnoreCase)
+                          .Replace("Device", "", StringComparison.OrdinalIgnoreCase)
+                          .Replace("Scanner", "", StringComparison.OrdinalIgnoreCase)
+                          .Replace("Smart Card Reader", "", StringComparison.OrdinalIgnoreCase)
+                          .Trim();
+        return cleaned;
+    }
+}
+
+
+using System;
+using System.Threading.Tasks;
+using MySql.Data.MySqlClient;
+
+public static class MySqlSaver
+{
+    // แก้ตามเครื่องของคุณ
+    private const string ConnStr = "Server=localhost;Port=3306;Database=assetdb;Uid=assetuser;Pwd=assetpass;";
+
+    public static async Task<long> SaveSnapshotAsync(MachineSnapshot snap)
+    {
+        using var conn = new MySqlConnection(ConnStr);
+        await conn.OpenAsync();
+
+        using var tx = await conn.BeginTransactionAsync();
+
+        // (ออปชัน) สร้างตารางถ้ายังไม่มี
+        await EnsureTablesAsync(conn, tx);
+
+        long machineId = await UpsertMachineAsync(conn, tx, snap.Machine);
+
+        // เคลียร์ข้อมูลอุปกรณ์เดิมเพื่อแทนที่ด้วยรายการล่าสุด
+        await ExecAsync(conn, tx, "DELETE FROM monitors WHERE machine_id=@id", ("@id", machineId));
+        await ExecAsync(conn, tx, "DELETE FROM printers WHERE machine_id=@id", ("@id", machineId));
+        await ExecAsync(conn, tx, "DELETE FROM scanners WHERE machine_id=@id", ("@id", machineId));
+        await ExecAsync(conn, tx, "DELETE FROM card_readers WHERE machine_id=@id", ("@id", machineId));
+
+        // แทรกใหม่
+        foreach (var m in snap.Monitors)
+        {
+            await ExecAsync(conn, tx,
+                @"INSERT INTO monitors (machine_id, manufacturer, model, serial)
+                  VALUES (@mid, @mfg, @model, @serial)",
+                ("@mid", machineId), ("@mfg", m.Manufacturer), ("@model", m.Model), ("@serial", m.Serial));
+        }
+
+        foreach (var p in snap.Printers)
+        {
+            await ExecAsync(conn, tx,
+                @"INSERT INTO printers (machine_id, name, driver_name, port_name, is_network, is_default, is_shared, manufacturer)
+                  VALUES (@mid, @name, @drv, @port, @net, @def, @shared, @mfg)",
+                ("@mid", machineId),
+                ("@name", p.Name),
+                ("@drv", p.DriverName),
+                ("@port", p.PortName),
+                ("@net", p.IsNetwork ?? false),
+                ("@def", p.IsDefault ?? false),
+                ("@shared", p.IsShared ?? false),
+                ("@mfg", p.Manufacturer)
+            );
+        }
+
+        foreach (var s in snap.Scanners)
+        {
+            await ExecAsync(conn, tx,
+                @"INSERT INTO scanners (machine_id, name, manufacturer, model, pnp_device_id)
+                  VALUES (@mid, @name, @mfg, @model, @pnp)",
+                ("@mid", machineId),
+                ("@name", s.Name),
+                ("@mfg", s.Manufacturer),
+                ("@model", s.Model),
+                ("@pnp", s.PnpDeviceId)
+            );
+        }
+
+        foreach (var r in snap.CardReaders)
+        {
+            await ExecAsync(conn, tx,
+                @"INSERT INTO card_readers (machine_id, name, manufacturer, model, pnp_device_id)
+                  VALUES (@mid, @name, @mfg, @model, @pnp)",
+                ("@mid", machineId),
+                ("@name", r.Name),
+                ("@mfg", r.Manufacturer),
+                ("@model", r.Model),
+                ("@pnp", r.PnpDeviceId)
+            );
+        }
+
+        await tx.CommitAsync();
+        return machineId;
+    }
+
+    private static async Task<long> UpsertMachineAsync(MySqlConnection conn, MySqlTransaction tx, MachineRecord m)
+    {
+        // ใช้ ON DUPLICATE KEY เพื่อคง id เดิมถ้ามี bios_serial หรือ machine_name ซ้ำ
+        var sql = @"
+INSERT INTO machines (machine_name, user_name, manufacturer, model, bios_serial, os_caption, os_version, os_arch)
+VALUES (@name, @user, @mfg, @model, @serial, @osc, @osv, @arch)
+ON DUPLICATE KEY UPDATE
+  user_name=VALUES(user_name),
+  manufacturer=VALUES(manufacturer),
+  model=VALUES(model),
+  os_caption=VALUES(os_caption),
+  os_version=VALUES(os_version),
+  os_arch=VALUES(os_arch),
+  id=LAST_INSERT_ID(id);
+SELECT LAST_INSERT_ID();";
+
+        using var cmd = new MySqlCommand(sql, conn, tx);
+        cmd.Parameters.AddWithValue("@name",  m.MachineName);
+        cmd.Parameters.AddWithValue("@user",  (object?)m.UserName ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@mfg",   (object?)m.Manufacturer ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@model", (object?)m.Model ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@serial",(object?)m.BiosSerial ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@osc",   (object?)m.OsCaption ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@osv",   (object?)m.OsVersion ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@arch",  (object?)m.OsArch ?? DBNull.Value);
+
+        var result = await cmd.ExecuteScalarAsync();
+        return Convert.ToInt64(result);
+    }
+
+    private static async Task EnsureTablesAsync(MySqlConnection conn, MySqlTransaction tx)
+    {
+        // สร้างแบบย่อ (ถ้ามีอยู่แล้วคำสั่งจะข้าม)
+        var ddl = @"
+CREATE TABLE IF NOT EXISTS machines (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  machine_name VARCHAR(255) NOT NULL,
+  user_name VARCHAR(255),
+  manufacturer VARCHAR(255),
+  model VARCHAR(255),
+  bios_serial VARCHAR(120),
+  os_caption VARCHAR(255),
+  os_version VARCHAR(64),
+  os_arch VARCHAR(32),
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_bios_serial (bios_serial),
+  UNIQUE KEY uk_machine_name (machine_name)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS monitors (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  machine_id BIGINT NOT NULL,
+  manufacturer VARCHAR(255),
+  model VARCHAR(255),
+  serial VARCHAR(255),
+  FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE,
+  INDEX ix_mon_machine (machine_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS printers (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  machine_id BIGINT NOT NULL,
+  name VARCHAR(255),
+  driver_name VARCHAR(255),
+  port_name VARCHAR(255),
+  is_network TINYINT(1),
+  is_default TINYINT(1),
+  is_shared TINYINT(1),
+  manufacturer VARCHAR(255),
+  FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE,
+  INDEX ix_prn_machine (machine_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS scanners (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  machine_id BIGINT NOT NULL,
+  name VARCHAR(255),
+  manufacturer VARCHAR(255),
+  model VARCHAR(255),
+  pnp_device_id VARCHAR(500),
+  FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE,
+  INDEX ix_sc_machine (machine_id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS card_readers (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  machine_id BIGINT NOT NULL,
+  name VARCHAR(255),
+  manufacturer VARCHAR(255),
+  model VARCHAR(255),
+  pnp_device_id VARCHAR(500),
+  FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE,
+  INDEX ix_cr_machine (machine_id)
+) ENGINE=InnoDB;";
+
+        using var cmd = new MySqlCommand(ddl, conn, tx);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    private static async Task ExecAsync(MySqlConnection conn, MySqlTransaction tx, string sql, params (string, object?)[] ps)
+    {
+        using var cmd = new MySqlCommand(sql, conn, tx);
+        foreach (var (k, v) in ps)
+            cmd.Parameters.AddWithValue(k, v ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync();
+    }
+}
+
+
+using System;
+using System.Text.Json;
+using System.Threading.Tasks;
+
+class Program
+{
+    static async Task Main()
+    {
+        Console.WriteLine("Collecting device inventory...");
+        var snap = Collector.CollectAll();
+
+        // แสดงบนคอนโซล (debug)
+        Console.WriteLine(JsonSerializer.Serialize(snap, new JsonSerializerOptions { WriteIndented = true }));
+
+        // บันทึกลง MySQL
+        var machineId = await MySqlSaver.SaveSnapshotAsync(snap);
+        Console.WriteLine($"\nSaved to MySQL. machine_id = {machineId}");
+    }
+}
+
+
+dotnet build
+dotnet run
+
+
+mysql -u root -p
+
+dotnet publish -c Release -f net9.0-windows -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishReadyToRun=true
+
+dotnet publish `
+  -c Release `
+  -f net9.0-windows `
+  -r win-x64 `
+  --self-contained true `
+  -p:PublishSingleFile=true `
+  -p:IncludeNativeLibrariesForSelfExtract=true `
+  -p:PublishReadyToRun=true
+
+
+.\bin\Release\net9.0-windows\win-x64\publish\<ProjectName>.exe
