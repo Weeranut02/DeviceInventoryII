@@ -1,0 +1,114 @@
+{
+  "MachineName": "LAPTOP-PS1S5NT4",
+  "UserName": "User",
+  "OSDescription": "Microsoft Windows 10.0.26100",
+  "OSArchitecture": "X64",
+  "Framework": ".NET 9.0.6",
+  "ProcessorCount": 20,
+  "Uptime": "18:53:47.2960000",
+  "Cpu": {
+    "Name": "13th Gen Intel(R) Core(TM) i7-13650HX",
+    "Cores": 14,
+    "Logical": 20,
+    "Id": "BFEBFBFF000B0671"
+  },
+  "Memory": {
+    "TotalMB": 24866680,
+    "FreeMB": 7729368
+  },
+  "Disks": [
+    {
+      "Model": "C:\\",
+      "Serial": null,
+      "SizeBytes": 509722226688,
+      "InterfaceType": null
+    },
+    {
+      "Model": "D:\\",
+      "Serial": null,
+      "SizeBytes": 1000186310656,
+      "InterfaceType": null
+    },
+    {
+      "Model": "WD_BLACK SN770 1TB",
+      "Serial": "E823_8FA6_BF53_0001_001B_444A_41AB_6DF0.",
+      "SizeBytes": 1000202273280,
+      "InterfaceType": "SCSI"
+    },
+    {
+      "Model": "WD PC SN740 SDDPMQD-512G-1101",
+      "Serial": "E823_8FA6_BF53_0001_001B_444A_419B_E5E5.",
+      "SizeBytes": 512105932800,
+      "InterfaceType": "SCSI"
+    }
+  ],
+  "NetworkAdapters": [
+    {
+      "Name": "Ethernet",
+      "Mac": "40C2BA4B2AC5",
+      "IPv4": [
+        "10.134.150.106"
+      ]
+    },
+    {
+      "Name": "Ethernet-WFP Native MAC Layer LightWeight Filter-0000",
+      "Mac": "40C2BA4B2AC5",
+      "IPv4": []
+    },
+    {
+      "Name": "Ethernet-QoS Packet Scheduler-0000",
+      "Mac": "40C2BA4B2AC5",
+      "IPv4": []
+    },
+    {
+      "Name": "Ethernet-WFP 802.3 MAC Layer LightWeight Filter-0000",
+      "Mac": "40C2BA4B2AC5",
+      "IPv4": []
+    },
+    {
+      "Name": "Local Area Connection* 8-WFP Native MAC Layer LightWeight Filter-0000",
+      "Mac": "",
+      "IPv4": []
+    },
+    {
+      "Name": "Local Area Connection* 8-QoS Packet Scheduler-0000",
+      "Mac": "",
+      "IPv4": []
+    },
+    {
+      "Name": "Local Area Connection* 9-WFP Native MAC Layer LightWeight Filter-0000",
+      "Mac": "",
+      "IPv4": []
+    },
+    {
+      "Name": "Local Area Connection* 9-QoS Packet Scheduler-0000",
+      "Mac": "",
+      "IPv4": []
+    },
+    {
+      "Name": "Local Area Connection* 10-WFP Native MAC Layer LightWeight Filter-0000",
+      "Mac": "",
+      "IPv4": []
+    },
+    {
+      "Name": "Local Area Connection* 10-QoS Packet Scheduler-0000",
+      "Mac": "",
+      "IPv4": []
+    },
+    {
+      "Name": "Local Area Connection* 8",
+      "Mac": "",
+      "IPv4": []
+    },
+    {
+      "Name": "Local Area Connection* 9",
+      "Mac": "",
+      "IPv4": []
+    },
+    {
+      "Name": "Local Area Connection* 10",
+      "Mac": "",
+      "IPv4": []
+    }
+  ]
+}
